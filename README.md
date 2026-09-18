@@ -112,7 +112,7 @@ To use PacketWire in your application, add references to `PacketWire.Runtime` an
 ```
 
 > [!NOTE]
-> **Release & Publication Status**: The PacketWire source code is public on [GitHub](https://github.com/abdel-moumen-abdel-raouf/PacketWire). NuGet package publication for version `0.1.0` is currently pending final release validation. In consumer projects, `PacketWire.Runtime` brings `PacketWire.Abstractions` and `PacketWire.Security.Abstractions` transitively.
+> **Package Availability**: PacketWire packages use the package IDs documented below. For currently published versions and package availability, check NuGet.org and the GitHub Releases page. In consumer projects, `PacketWire.Runtime` brings `PacketWire.Abstractions` and `PacketWire.Security.Abstractions` transitively.
 
 ---
 
