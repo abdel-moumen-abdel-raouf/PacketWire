@@ -38,10 +38,11 @@ jobs:
             Write-Error "VersionPrefix '$versionPrefix' does not match expected version '$expectedVersion'!"
             exit 1
           }
-          if ($env:GITHUB_REF -ne "refs/tags/v$expectedVersion" -and $env:GITHUB_REF -ne "refs/heads/main") {
-            Write-Error "Unauthorized release ref: $env:GITHUB_REF. Must be refs/tags/v$expectedVersion or refs/heads/main."
+          if ($env:GITHUB_REF -ne "refs/tags/v$expectedVersion") {
+            Write-Error "Unauthorized release ref: $env:GITHUB_REF. Publication is strictly authorized ONLY for refs/tags/v$expectedVersion."
             exit 1
           }
+          Write-Output "Tag verification PASSED: GITHUB_REF is refs/tags/v$expectedVersion."
 
       - name: Clean and Build (Debug)
         shell: pwsh
@@ -52,20 +53,63 @@ jobs:
       - name: Run Test Suites (Debug)
         shell: pwsh
         run: |
+          $testResultsDir = "artifacts/test-results/debug"
+          if (Test-Path $testResultsDir) { Remove-Item -Recurse -Force $testResultsDir }
+          New-Item -ItemType Directory -Path $testResultsDir -Force | Out-Null
+
           $suites = @(
-            @{ Path = "tests/PacketWire.Abstractions.Tests"; Expected = 32 },
-            @{ Path = "tests/PacketWire.Runtime.Tests"; Expected = 101 },
-            @{ Path = "tests/PacketWire.Generator.Tests"; Expected = 87 },
-            @{ Path = "tests/PacketWire.Security.AesGcm.Tests"; Expected = 7 },
-            @{ Path = "integration/PacketWire.Consumer.Tests"; Expected = 13 }
+            @{ Path = "tests/PacketWire.Abstractions.Tests"; Expected = 32; Name = "Abstractions" },
+            @{ Path = "tests/PacketWire.Runtime.Tests"; Expected = 101; Name = "Runtime" },
+            @{ Path = "tests/PacketWire.Generator.Tests"; Expected = 87; Name = "Generator" },
+            @{ Path = "tests/PacketWire.Security.AesGcm.Tests"; Expected = 7; Name = "AesGcm" },
+            @{ Path = "integration/PacketWire.Consumer.Tests"; Expected = 13; Name = "Consumer" }
           )
+
+          $grandTotalPassed = 0
+
           foreach ($suite in $suites) {
             Write-Output "=== Testing (Debug): $($suite.Path) (Expected: $($suite.Expected)) ==="
-            dotnet test $suite.Path -c Debug --no-build
+            $trxName = "$($suite.Name).trx"
+            dotnet test $suite.Path -c Debug --no-build --logger "trx;LogFileName=$trxName" --results-directory $testResultsDir
             if ($LASTEXITCODE -ne 0) {
-              Write-Error "Debug test suite failed: $($suite.Path)"
+              Write-Error "Debug test run failed for suite $($suite.Name)"
               exit $LASTEXITCODE
             }
+
+            $trxPath = Join-Path $testResultsDir $trxName
+            if (-not (Test-Path $trxPath)) {
+              Write-Error "TRX result file missing: $trxPath"
+              exit 1
+            }
+
+            $trxXml = [xml](Get-Content $trxPath)
+            $c = $trxXml.TestRun.ResultSummary.Counters
+            $passed = [int]$c.passed
+            $failed = [int]$c.failed
+            $notExecuted = [int]$c.notExecuted
+
+            Write-Output "Suite $($suite.Name) counts: Passed=$passed, Failed=$failed, NotExecuted=$notExecuted"
+
+            if ($failed -ne 0) {
+              Write-Error "Suite $($suite.Name) has $failed failed tests!"
+              exit 1
+            }
+            if ($notExecuted -ne 0) {
+              Write-Error "Suite $($suite.Name) has $notExecuted skipped/notExecuted tests!"
+              exit 1
+            }
+            if ($passed -ne $suite.Expected) {
+              Write-Error "Suite $($suite.Name) passed $passed tests, expected exactly $($suite.Expected)!"
+              exit 1
+            }
+
+            $grandTotalPassed += $passed
+          }
+
+          Write-Output "Total Debug tests passed: $grandTotalPassed / 240"
+          if ($grandTotalPassed -ne 240) {
+            Write-Error "Grand total passed tests ($grandTotalPassed) does not match expected 240!"
+            exit 1
           }
 
       - name: Clean and Build (Release)
@@ -77,20 +121,63 @@ jobs:
       - name: Run Test Suites (Release)
         shell: pwsh
         run: |
+          $testResultsDir = "artifacts/test-results/release"
+          if (Test-Path $testResultsDir) { Remove-Item -Recurse -Force $testResultsDir }
+          New-Item -ItemType Directory -Path $testResultsDir -Force | Out-Null
+
           $suites = @(
-            @{ Path = "tests/PacketWire.Abstractions.Tests"; Expected = 32 },
-            @{ Path = "tests/PacketWire.Runtime.Tests"; Expected = 101 },
-            @{ Path = "tests/PacketWire.Generator.Tests"; Expected = 87 },
-            @{ Path = "tests/PacketWire.Security.AesGcm.Tests"; Expected = 7 },
-            @{ Path = "integration/PacketWire.Consumer.Tests"; Expected = 13 }
+            @{ Path = "tests/PacketWire.Abstractions.Tests"; Expected = 32; Name = "Abstractions" },
+            @{ Path = "tests/PacketWire.Runtime.Tests"; Expected = 101; Name = "Runtime" },
+            @{ Path = "tests/PacketWire.Generator.Tests"; Expected = 87; Name = "Generator" },
+            @{ Path = "tests/PacketWire.Security.AesGcm.Tests"; Expected = 7; Name = "AesGcm" },
+            @{ Path = "integration/PacketWire.Consumer.Tests"; Expected = 13; Name = "Consumer" }
           )
+
+          $grandTotalPassed = 0
+
           foreach ($suite in $suites) {
             Write-Output "=== Testing (Release): $($suite.Path) (Expected: $($suite.Expected)) ==="
-            dotnet test $suite.Path -c Release --no-build
+            $trxName = "$($suite.Name).trx"
+            dotnet test $suite.Path -c Release --no-build --logger "trx;LogFileName=$trxName" --results-directory $testResultsDir
             if ($LASTEXITCODE -ne 0) {
-              Write-Error "Release test suite failed: $($suite.Path)"
+              Write-Error "Release test run failed for suite $($suite.Name)"
               exit $LASTEXITCODE
             }
+
+            $trxPath = Join-Path $testResultsDir $trxName
+            if (-not (Test-Path $trxPath)) {
+              Write-Error "TRX result file missing: $trxPath"
+              exit 1
+            }
+
+            $trxXml = [xml](Get-Content $trxPath)
+            $c = $trxXml.TestRun.ResultSummary.Counters
+            $passed = [int]$c.passed
+            $failed = [int]$c.failed
+            $notExecuted = [int]$c.notExecuted
+
+            Write-Output "Suite $($suite.Name) counts: Passed=$passed, Failed=$failed, NotExecuted=$notExecuted"
+
+            if ($failed -ne 0) {
+              Write-Error "Suite $($suite.Name) has $failed failed tests!"
+              exit 1
+            }
+            if ($notExecuted -ne 0) {
+              Write-Error "Suite $($suite.Name) has $notExecuted skipped/notExecuted tests!"
+              exit 1
+            }
+            if ($passed -ne $suite.Expected) {
+              Write-Error "Suite $($suite.Name) passed $passed tests, expected exactly $($suite.Expected)!"
+              exit 1
+            }
+
+            $grandTotalPassed += $passed
+          }
+
+          Write-Output "Total Release tests passed: $grandTotalPassed / 240"
+          if ($grandTotalPassed -ne 240) {
+            Write-Error "Grand total passed tests ($grandTotalPassed) does not match expected 240!"
+            exit 1
           }
 
       - name: Pack Production Projects
@@ -173,6 +260,58 @@ jobs:
             if ($meta.license.'#text' -ne "Apache-2.0") { Write-Error "Invalid license expression in $($pkg.Name)"; exit 1 }
             if ($meta.repository.url -ne "https://github.com/abdel-moumen-abdel-raouf/PacketWire") { Write-Error "Invalid repository URL in $($pkg.Name)"; exit 1 }
 
+            # Extract dependencies
+            $deps = @()
+            if ($meta.dependencies) {
+              foreach ($group in $meta.dependencies.group) {
+                if ($group.dependency) {
+                  foreach ($dep in $group.dependency) {
+                    $deps += "$($dep.id) $($dep.version)"
+                  }
+                }
+              }
+            }
+
+            # Enforce exact dependency graph per package
+            if ($meta.id -eq "PacketWire.Abstractions") {
+              if ($deps.Count -ne 0) {
+                Write-Error "PacketWire.Abstractions must have zero dependencies, found: $($deps -join ', ')"
+                exit 1
+              }
+            }
+            elseif ($meta.id -eq "PacketWire.Security.Abstractions") {
+              if ($deps.Count -ne 0) {
+                Write-Error "PacketWire.Security.Abstractions must have zero dependencies, found: $($deps -join ', ')"
+                exit 1
+              }
+            }
+            elseif ($meta.id -eq "PacketWire.Generator") {
+              if ($deps.Count -ne 0) {
+                Write-Error "PacketWire.Generator must have zero dependencies, found: $($deps -join ', ')"
+                exit 1
+              }
+            }
+            elseif ($meta.id -eq "PacketWire.Runtime") {
+              $expectedDeps = @("PacketWire.Abstractions 0.1.0", "PacketWire.Security.Abstractions 0.1.0")
+              $diff = Compare-Object $deps $expectedDeps
+              if ($diff) {
+                Write-Error "PacketWire.Runtime dependencies mismatch! Expected: $($expectedDeps -join ', '), Found: $($deps -join ', ')"
+                exit 1
+              }
+            }
+            elseif ($meta.id -eq "PacketWire.Security.AesGcm") {
+              $expectedDeps = @("PacketWire.Security.Abstractions 0.1.0")
+              $diff = Compare-Object $deps $expectedDeps
+              if ($diff) {
+                Write-Error "PacketWire.Security.AesGcm dependencies mismatch! Expected: $($expectedDeps -join ', '), Found: $($deps -join ', ')"
+                exit 1
+              }
+            }
+            else {
+              Write-Error "Unexpected package ID: $($meta.id)"
+              exit 1
+            }
+
             if ($pkg.Name -like "PacketWire.Generator.*") {
               $hasLib = $zip.Entries | Where-Object { $_.FullName.StartsWith("lib/") }
               $hasRef = $zip.Entries | Where-Object { $_.FullName.StartsWith("ref/") }
@@ -194,7 +333,7 @@ jobs:
 
             $zip.Dispose()
           }
-          Write-Output "All package content audits PASSED."
+          Write-Output "All package content and dependency graph audits PASSED."
 
       - name: Package-Only Consumer Validation
         shell: pwsh
@@ -352,6 +491,16 @@ jobs:
 
           Write-Output "=== SHA256SUMS.txt ==="
           Get-Content $manifestPath
+
+      - name: Preserve Release Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: packetwire-0.1.0-release
+          path: |
+            artifacts/release/0.1.0/*.nupkg
+            artifacts/release/0.1.0/SHA256SUMS.txt
+          retention-days: 30
+          if-no-files-found: error
 
       - name: NuGet Trusted Publishing Login
         id: nuget-login
