@@ -53,31 +53,29 @@ PacketWire contains **no sockets, TCP/UDP listeners, clients, connections, strea
 PacketWire is organized into five modular NuGet packages:
 
 ```text
-                      +-----------------------------+
-                      |   PacketWire.Abstractions   |
-                      +-----------------------------+
-                                     ^
-                                     |
-                +--------------------+--------------------+
-                |                                         |
-+-------------------------------+         +------------------------------------+
-|      PacketWire.Runtime       |         |  PacketWire.Security.Abstractions  |
-+-------------------------------+         +------------------------------------+
-                ^                                         ^
-                |                                         |
-+-------------------------------+         +------------------------------------+
-|     PacketWire.Generator      |         |     PacketWire.Security.AesGcm     |
-|   (Analyzer / Source-Only)    |         +------------------------------------+
-+-------------------------------+
+Legend: [A] ---> [B] means package A depends on package B.
+
+   [PacketWire.Abstractions]          [PacketWire.Security.Abstractions]
+      (Zero dependencies)                    (Zero dependencies)
+               ^                                  ^        ^
+               |                                  |        |
+               +----------------+                 |        |
+                                |                 |        |
+                     [PacketWire.Runtime] --------+        |
+                                                           |
+                                            [PacketWire.Security.AesGcm]
+
+   [PacketWire.Generator]
+     (Analyzer-only Roslyn source generator; zero PacketWire runtime dependencies)
 ```
 
-| Package | Role | Purpose |
-|---|---|---|
-| `PacketWire.Abstractions` | Compile-Time & Runtime | Protocol and packet contract attributes (`[PacketProtocol]`, `[Packet]`, `[PacketField]`, `[FixedString]`, `[Optional]`, `[MaxCount]`). |
-| `PacketWire.Runtime` | Runtime Library | High-performance span-based binary readers/writers, frame encoders/decoders, collection codecs, presence markers, and runtime exceptions. |
-| `PacketWire.Generator` | Roslyn Analyzer | Incremental source generator that synthesizes specialized codecs, registry dispatchers, and public protocol facades at compile time. |
-| `PacketWire.Security.Abstractions` | Abstraction | `IPayloadProtector` interface and security exception models (`PayloadProtectionException`). |
-| `PacketWire.Security.AesGcm` | Security Provider | Authenticated encryption and decryption (AEAD) provider using `System.Security.Cryptography.AesGcm`. |
+| Package | Role | Dependencies | Purpose |
+|---|---|---|---|
+| `PacketWire.Abstractions` | Compile-Time & Runtime | *(None)* | Protocol and packet contract attributes (`[PacketProtocol]`, `[Packet]`, `[PacketField]`, `[FixedString]`, `[Optional]`, `[MaxCount]`). |
+| `PacketWire.Security.Abstractions` | Abstraction | *(None)* | `IPayloadProtector` interface and security exception models (`PayloadProtectionException`). |
+| `PacketWire.Runtime` | Runtime Library | `PacketWire.Abstractions`<br>`PacketWire.Security.Abstractions` | High-performance span-based binary readers/writers, frame encoders/decoders, collection codecs, presence markers, and runtime exceptions. |
+| `PacketWire.Security.AesGcm` | Security Provider | `PacketWire.Security.Abstractions` | Authenticated encryption and decryption (AEAD) provider using `System.Security.Cryptography.AesGcm`. |
+| `PacketWire.Generator` | Roslyn Analyzer | *(None)* (Analyzer-only) | Incremental source generator that synthesizes specialized codecs, registry dispatchers, and public protocol facades at compile time. |
 
 ---
 
@@ -110,7 +108,7 @@ To use PacketWire in your application, add references to `PacketWire.Runtime` an
 ```
 
 > [!NOTE]
-> PacketWire is currently at version `0.1.0`. `PacketWire.Runtime` brings `PacketWire.Abstractions` and `PacketWire.Security.Abstractions` transitively.
+> **Release & Publication Status**: The PacketWire source code is public on [GitHub](https://github.com/abdel-moumen-abdel-raouf/PacketWire). NuGet package publication for version `0.1.0` is currently pending final release validation. In consumer projects, `PacketWire.Runtime` brings `PacketWire.Abstractions` and `PacketWire.Security.Abstractions` transitively.
 
 ---
 
@@ -124,8 +122,8 @@ Declare a partial class decorated with `[PacketProtocol]`. This class serves as 
 using PacketWire;
 
 [PacketProtocol(
-    PacketIntegerSize.TwoBytes,      // Packet length width: 2 bytes (max 65,535 B)
     PacketIntegerSize.TwoBytes,      // Packet ID width: 2 bytes (max 65,535 IDs)
+    PacketIntegerSize.TwoBytes,      // Packet length width: 2 bytes (max 65,535 B)
     PacketIntegerSize.TwoBytes,      // Collection count width: 2 bytes
     PacketByteOrder.LittleEndian)]   // Endianness for all multi-byte wire integers
 public sealed partial class GameProtocol
@@ -181,7 +179,7 @@ PingPacket verified = GameProtocol.Deserialize<PingPacket>(roundTripBytes);
 
 ## Wire Frame Format
 
-PacketWire frames are structured to enable zero-allocation, single-pass decoding. The clear protocol header precedes the payload and contains all framing metadata required to route and process the packet:
+PacketWire frames are structured to enable single-pass decoding and span-backed inspection. The clear protocol header precedes the payload and contains all framing metadata required to route and process the packet:
 
 ```text
 +---------------------+-------------------+------------------------+-------------------+----------------------------+
@@ -540,7 +538,7 @@ When protected serialization is used, the wire payload replaces the raw field by
 
 ### Header Authentication via Associated Data (AAD)
 
-The protocol frame header (`PacketLength | Flags | PacketCategory | PacketId`) remains unencrypted so intermediate network routers and dispatchers can inspect packet identity without holding encryption keys.
+The protocol frame header (`PacketLength | Flags | PacketCategory | PacketId`) remains unencrypted so consumer application code, framing/dispatch layers, and external transport integration code can inspect packet identity, length, and routing metadata without holding encryption keys.
 
 However, the complete header is supplied as **Authenticated Associated Data (AAD)** to the AES-GCM cipher during both encryption and decryption. This cryptographically binds packet identity to the ciphertext:
 - **Tamper Rejection**: Any modification to the clear header (such as altering the Packet ID, Category, or Length) invalidates the AEAD authentication tag, failing closed immediately.
@@ -607,6 +605,10 @@ catch (PayloadProtectionException)
 ## Custom Payload Protectors (Example 29)
 
 You can provide custom payload protection strategies (e.g. ChaCha20-Poly1305, custom hardware crypto, or test passthrough wrappers) by implementing `IPayloadProtector`:
+
+> [!WARNING]
+> **Demonstration Only — Intentionally Insecure**  
+> The `XorMaskPayloadProtector` example below is strictly for demonstrating the `IPayloadProtector` interface contract and for unit testing. It provides **no real confidentiality, no integrity verification, no authentication tag, and ignores Associated Data (AAD)**. Do NOT use XOR masking or non-AEAD ciphers in production environments. For production workloads, use `AesGcmPayloadProtector` or another authenticated AEAD construction.
 
 ```csharp
 using System;
@@ -797,23 +799,27 @@ PacketWire validates your protocol contracts at compile time, providing descript
 ## Performance & Allocation Characteristics
 
 PacketWire is engineered for high throughput and predictable memory behavior:
-- **Direct Span Encoding**: Reading and writing integers uses direct bit-shifting or `BinaryPrimitives` without intermediary stream objects.
-- **Pre-Calculated Buffers**: Serialization pre-measures the exact required payload length, allocating exactly one byte array for the complete frame.
-- **Zero Reflection on Hot Path**: The source generator generates direct field assignment code, eliminating runtime reflection and boxing.
+- **Span-Backed Views**: `PacketFrameCodec.ReadFrame` provides a span-backed, zero-copy frame view over existing buffers without heap allocations.
+- **Span-Backed Codecs**: `PacketReader` and `PacketWriter` are span-backed `ref struct` primitives operating directly over caller-provided spans.
+- **Reflection-Free Hot Path**: Generated codec serialization and deserialization routines execute direct assignment code, eliminating runtime reflection and boxing.
+- **Predictable Allocations**:
+  - Full object deserialization (`Deserialize<TPacket>`) normally creates only the restored DTO instance.
+  - Plain serialization (`Serialize`) pre-measures the exact frame length and returns only its final frame `byte[]`.
+  - Protected serialization (`Serialize` with protector) utilizes a pooled temporary buffer (`ArrayPool<byte>.Shared`) for plaintext staging, allocating only the returned final protected frame `byte[]`.
 
 ### Local Baseline Measurements
 
-The repository includes a dedicated benchmark harness (`perf/PacketWire.Performance`). Measurements on a representative workstation (.NET 10.0 x64):
+The repository includes a dedicated benchmark harness (`perf/PacketWire.Performance`). Measurements represent a local historical baseline on an AMD Ryzen-class workstation under BenchmarkDotNet (.NET 10.0 x64):
 
-| Operation | Typical Throughput | Allocations |
-|---|---|---|
-| **Plain Serialization** | ~14–18M ops/sec | 1 frame `byte[]` |
-| **Plain Deserialization** | ~18–25M ops/sec | 1 DTO instance |
-| **AES-GCM Serialization** | ~1.5–2.5M ops/sec | 1 frame `byte[]` |
-| **AES-GCM Deserialization** | ~1.8–2.8M ops/sec | 1 DTO instance |
+| Benchmark Operation | Median Latency | Allocated Memory | Allocation Pattern |
+|---|---|---|---|
+| `plain.serialize` | 217.1748 ns/op | 48 B/op | Returns final frame `byte[]` |
+| `plain.deserialize` | 185.8864 ns/op | 32 B/op | Constructs restored DTO |
+| `protected.serialize.aesgcm` | 570.8500 ns/op | 72 B/op | Pooled temporary plaintext buffer + final protected frame `byte[]` |
+| `protected.deserialize.aesgcm` | 455.5690 ns/op | 32 B/op | Constructs restored DTO |
 
 > [!NOTE]
-> These measurements represent local hardware baselines under controlled benchmark loops and are **not API SLAs**. Actual throughput and latency vary based on payload size, processor architecture, runtime tiering, and OS cryptographic acceleration.
+> These measurements represent a local historical baseline and are **not an API SLA**. Actual throughput and latency vary based on payload size, processor architecture, runtime tiering, and OS cryptographic acceleration.
 
 ---
 
@@ -830,7 +836,7 @@ PacketWire/
 ├── tests/
 │   ├── PacketWire.Abstractions.Tests/     # Abstraction unit tests (32 tests)
 │   ├── PacketWire.Runtime.Tests/          # Framing and reader/writer unit tests (101 tests)
-│   ├── PacketWire.Generator.Tests/        # Roslyn generator test host and assertions (85 tests)
+│   ├── PacketWire.Generator.Tests/        # Roslyn generator test host and assertions (87 tests)
 │   └── PacketWire.Security.AesGcm.Tests/  # AES-GCM crypto and tamper tests (7 tests)
 ├── integration/
 │   ├── PacketWire.Consumer/               # Consumer library exercising generated facades
@@ -849,9 +855,9 @@ PacketWire/
 
 PacketWire maintains strict quality gates across all builds:
 
-- **100% Test Passing Rate**: 238 tests passing across 5 test suites in both Debug and Release configurations.
+- **100% Test Passing Rate**: 240 tests passing across 5 test suites in both Debug and Release configurations.
 - **Zero Compiler Warnings**: Built with `<TreatWarningsAsErrors>true</TreatWarningsAsErrors>`.
-- **Complete XML Documentation**: All 105 authored C# source files across the repository have 100% XML documentation coverage (`0` undocumented declarations).
+- **Complete XML Documentation**: All 106 authored C# source files across the repository have 100% XML documentation coverage (`0` undocumented declarations).
 - **No Suppression**: Zero `CS1591` suppressions, zero `<NoWarn>` documentation disablements, and zero `#pragma warning disable` comments.
 
 ---
@@ -860,7 +866,7 @@ PacketWire maintains strict quality gates across all builds:
 
 1. **Authenticated Framing Binding**: Always use AES-GCM payload protection when communicating over untrusted networks. Tampering with unencrypted routing headers is caught by AES-GCM Associated Data (AAD) validation.
 2. **Buffer Erasure on Failure**: `AesGcmPayloadProtector` immediately zeroes decrypted memory buffers upon cryptographic authentication failure, preventing partial plaintext leakage.
-3. **Key Management**: Keys must be 16 bytes (AES-128), 24 bytes (AES-192), or 32 bytes (AES-256). Rotate keys regularly according to NIST SP 800-38D guidelines.
+3. **Key Management**: Keys must be 16 bytes (AES-128), 24 bytes (AES-192), or 32 bytes (AES-256). Manage key lifecycles, rotation policies, and nonce uniqueness in accordance with organizational security policies and NIST recommendations for AEAD operation.
 4. **Collection Limits**: Always specify `[MaxCount(limit)]` on untrusted collections to safeguard against memory exhaustion attacks.
 
 ---
@@ -878,8 +884,8 @@ A: Fixed-width strings ensure deterministic frame layouts and eliminate length-p
 **Q: Why does my protocol class produce an error saying it cannot be found?**  
 A: Ensure your protocol class is declared with the `partial` modifier (`public sealed partial class MyProtocol`) and is a top-level non-generic class.
 
-**Q: How do I handle optional value types in strict build environments?**  
-A: When compiling with `<TreatWarningsAsErrors>true</TreatWarningsAsErrors>`, nullable value types (e.g. `int?`) may report compiler warning `CS8629`. You can suppress `CS8629` in your consumer project or use optional reference types (e.g. `[Optional] [FixedString(32)] string?`).
+**Q: Are optional nullable value types supported under strict nullability?**  
+A: Yes. Valid `[Optional]` `Nullable<T>` packet fields (e.g. `int?`, enums) are fully supported without requiring nullable warning suppression. The source generator automatically snapshots optional value-type properties into flow-analyzed local variables, guaranteeing clean compilation with zero warnings even when `<Nullable>enable</Nullable>` and `<TreatWarningsAsErrors>true</TreatWarningsAsErrors>` are active.
 
 ---
 
