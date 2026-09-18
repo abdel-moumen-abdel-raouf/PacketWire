@@ -1,0 +1,22 @@
+<Solution>
+  <Folder Name="/integration/">
+    <Project Path="integration/PacketWire.Consumer.Tests/PacketWire.Consumer.Tests.csproj" />
+    <Project Path="integration/PacketWire.Consumer/PacketWire.Consumer.csproj" />
+  </Folder>
+  <Folder Name="/perf/">
+    <Project Path="perf/PacketWire.Performance/PacketWire.Performance.csproj" />
+  </Folder>
+  <Folder Name="/src/">
+    <Project Path="src/PacketWire.Generator/PacketWire.Generator.csproj" />
+    <Project Path="src/PacketWire.Security.Abstractions/PacketWire.Security.Abstractions.csproj" />
+    <Project Path="src/PacketWire.Abstractions/PacketWire.Abstractions.csproj" />
+    <Project Path="src/PacketWire.Runtime/PacketWire.Runtime.csproj" />
+    <Project Path="src/PacketWire.Security.AesGcm/PacketWire.Security.AesGcm.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/PacketWire.Abstractions.Tests/PacketWire.Abstractions.Tests.csproj" />
+    <Project Path="tests/PacketWire.Generator.Tests/PacketWire.Generator.Tests.csproj" />
+    <Project Path="tests/PacketWire.Runtime.Tests/PacketWire.Runtime.Tests.csproj" />
+    <Project Path="tests/PacketWire.Security.AesGcm.Tests/PacketWire.Security.AesGcm.Tests.csproj" />
+  </Folder>
+</Solution>

@@ -1,0 +1,19 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <ItemGroup>
+    <ProjectReference Include="..\PacketWire.Abstractions\PacketWire.Abstractions.csproj" />
+    <ProjectReference Include="..\PacketWire.Security.Abstractions\PacketWire.Security.Abstractions.csproj" />
+  </ItemGroup>
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+
+    <IsPackable>true</IsPackable>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <PackageId>PacketWire.Runtime</PackageId>
+    <Description>Span-based binary packet framing and runtime support for PacketWire-generated codecs.</Description>
+  </PropertyGroup>
+
+</Project>
