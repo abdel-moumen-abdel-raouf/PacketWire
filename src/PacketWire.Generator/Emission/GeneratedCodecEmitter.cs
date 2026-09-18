@@ -230,21 +230,58 @@ internal static class GeneratedCodecEmitter
                 builder.AppendLine(
                     "            length = checked(length + 1);");
 
-                string presenceExpression =
-                    GetPresenceExpression(field);
+                if (IsNullableValueType(field.Property.Type))
+                {
+                    string orderSuffix =
+                        field.Order.ToString(
+                            CultureInfo.InvariantCulture);
 
-                builder.Append("            if (");
-                builder.Append(presenceExpression);
-                builder.AppendLine(")");
-                builder.AppendLine("            {");
+                    string optionalName =
+                        "__optional_" +
+                        orderSuffix;
 
-                EmitLengthForValue(
-                    builder,
-                    field,
-                    GetPresentValueExpression(field),
-                    "                ");
+                    builder.Append("            ");
+                    builder.Append(
+                        GetTypeName(
+                            field.Property.Type));
+                    builder.Append(' ');
+                    builder.Append(optionalName);
+                    builder.Append(" = ");
+                    builder.Append(
+                        GetPropertyExpression(field));
+                    builder.AppendLine(";");
 
-                builder.AppendLine("            }");
+                    builder.Append("            if (");
+                    builder.Append(optionalName);
+                    builder.AppendLine(".HasValue)");
+                    builder.AppendLine("            {");
+
+                    EmitLengthForValue(
+                        builder,
+                        field,
+                        optionalName + ".Value",
+                        "                ");
+
+                    builder.AppendLine("            }");
+                }
+                else
+                {
+                    string presenceExpression =
+                        GetPresenceExpression(field);
+
+                    builder.Append("            if (");
+                    builder.Append(presenceExpression);
+                    builder.AppendLine(")");
+                    builder.AppendLine("            {");
+
+                    EmitLengthForValue(
+                        builder,
+                        field,
+                        GetPresentValueExpression(field),
+                        "                ");
+
+                    builder.AppendLine("            }");
+                }
             }
             else
             {
@@ -442,45 +479,97 @@ internal static class GeneratedCodecEmitter
 
             if (field.IsOptional)
             {
-                string presenceExpression =
-                    GetPresenceExpression(field);
+                if (IsNullableValueType(field.Property.Type))
+                {
+                    string orderSuffix =
+                        field.Order.ToString(
+                            CultureInfo.InvariantCulture);
 
-                builder.Append(
-                    "            bool __present_");
+                    string optionalName =
+                        "__optional_" +
+                        orderSuffix;
 
-                builder.Append(
-                    field.Order.ToString(
-                        CultureInfo.InvariantCulture));
+                    string presentName =
+                        "__present_" +
+                        orderSuffix;
 
-                builder.Append(" = ");
-                builder.Append(presenceExpression);
-                builder.AppendLine(";");
+                    builder.Append("            ");
+                    builder.Append(
+                        GetTypeName(
+                            field.Property.Type));
+                    builder.Append(' ');
+                    builder.Append(optionalName);
+                    builder.Append(" = ");
+                    builder.Append(
+                        GetPropertyExpression(field));
+                    builder.AppendLine(";");
 
-                builder.Append(
-                    "            global::PacketWire.PacketPresenceCodec.Write(ref writer, __present_");
+                    builder.Append("            bool ");
+                    builder.Append(presentName);
+                    builder.Append(" = ");
+                    builder.Append(optionalName);
+                    builder.AppendLine(".HasValue;");
 
-                builder.Append(
-                    field.Order.ToString(
-                        CultureInfo.InvariantCulture));
+                    builder.Append(
+                        "            global::PacketWire.PacketPresenceCodec.Write(ref writer, ");
+                    builder.Append(presentName);
+                    builder.AppendLine(");");
 
-                builder.AppendLine(");");
+                    builder.Append("            if (");
+                    builder.Append(optionalName);
+                    builder.AppendLine(".HasValue)");
+                    builder.AppendLine("            {");
 
-                builder.Append("            if (__present_");
+                    EmitWriteValue(
+                        builder,
+                        field,
+                        optionalName + ".Value",
+                        "                ");
 
-                builder.Append(
-                    field.Order.ToString(
-                        CultureInfo.InvariantCulture));
+                    builder.AppendLine("            }");
+                }
+                else
+                {
+                    string presenceExpression =
+                        GetPresenceExpression(field);
 
-                builder.AppendLine(")");
-                builder.AppendLine("            {");
+                    builder.Append(
+                        "            bool __present_");
 
-                EmitWriteValue(
-                    builder,
-                    field,
-                    GetPresentValueExpression(field),
-                    "                ");
+                    builder.Append(
+                        field.Order.ToString(
+                            CultureInfo.InvariantCulture));
 
-                builder.AppendLine("            }");
+                    builder.Append(" = ");
+                    builder.Append(presenceExpression);
+                    builder.AppendLine(";");
+
+                    builder.Append(
+                        "            global::PacketWire.PacketPresenceCodec.Write(ref writer, __present_");
+
+                    builder.Append(
+                        field.Order.ToString(
+                            CultureInfo.InvariantCulture));
+
+                    builder.AppendLine(");");
+
+                    builder.Append("            if (__present_");
+
+                    builder.Append(
+                        field.Order.ToString(
+                            CultureInfo.InvariantCulture));
+
+                    builder.AppendLine(")");
+                    builder.AppendLine("            {");
+
+                    EmitWriteValue(
+                        builder,
+                        field,
+                        GetPresentValueExpression(field),
+                        "                ");
+
+                    builder.AppendLine("            }");
+                }
             }
             else
             {
