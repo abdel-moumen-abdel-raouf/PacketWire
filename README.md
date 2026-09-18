@@ -53,20 +53,24 @@ PacketWire contains **no sockets, TCP/UDP listeners, clients, connections, strea
 PacketWire is organized into five modular NuGet packages:
 
 ```text
-Legend: [A] ---> [B] means package A depends on package B.
+Legend: A ---> B means A depends on B.
 
-   [PacketWire.Abstractions]          [PacketWire.Security.Abstractions]
-      (Zero dependencies)                    (Zero dependencies)
-               ^                                  ^        ^
-               |                                  |        |
-               +----------------+                 |        |
-                                |                 |        |
-                     [PacketWire.Runtime] --------+        |
-                                                           |
-                                            [PacketWire.Security.AesGcm]
+PacketWire.Runtime
+    ---> PacketWire.Abstractions
+    ---> PacketWire.Security.Abstractions
 
-   [PacketWire.Generator]
-     (Analyzer-only Roslyn source generator; zero PacketWire runtime dependencies)
+PacketWire.Security.AesGcm
+    ---> PacketWire.Security.Abstractions
+
+PacketWire.Abstractions
+    ---> no PacketWire dependencies
+
+PacketWire.Security.Abstractions
+    ---> no PacketWire dependencies
+
+PacketWire.Generator
+    ---> analyzer-only
+    ---> no PacketWire package dependencies
 ```
 
 | Package | Role | Dependencies | Purpose |
@@ -798,28 +802,36 @@ PacketWire validates your protocol contracts at compile time, providing descript
 
 ## Performance & Allocation Characteristics
 
-PacketWire is engineered for high throughput and predictable memory behavior:
-- **Span-Backed Views**: `PacketFrameCodec.ReadFrame` provides a span-backed, zero-copy frame view over existing buffers without heap allocations.
-- **Span-Backed Codecs**: `PacketReader` and `PacketWriter` are span-backed `ref struct` primitives operating directly over caller-provided spans.
-- **Reflection-Free Hot Path**: Generated codec serialization and deserialization routines execute direct assignment code, eliminating runtime reflection and boxing.
-- **Predictable Allocations**:
-  - Full object deserialization (`Deserialize<TPacket>`) normally creates only the restored DTO instance.
-  - Plain serialization (`Serialize`) pre-measures the exact frame length and returns only its final frame `byte[]`.
-  - Protected serialization (`Serialize` with protector) utilizes a pooled temporary buffer (`ArrayPool<byte>.Shared`) for plaintext staging, allocating only the returned final protected frame `byte[]`.
+PacketWire is engineered for high throughput and predictable memory behavior.
 
-### Local Baseline Measurements
+### Implementation Architecture
+- **Span-Backed Views**: `PacketFrameCodec.ReadFrame` exposes a span-backed zero-copy frame view over existing buffers without heap allocations.
+- **Span-Backed Codecs**: `PacketReader` and `PacketWriter` are `Span`-backed `ref struct` primitives operating directly over caller-provided byte spans.
+- **Reflection-Free Hot Paths**: Generated codec hot paths avoid runtime reflection and boxing with direct, strongly-typed assignment code.
+- **Buffer Staging**: Protected PacketWire serialization uses `ArrayPool<byte>.Shared` for its temporary plaintext staging buffer.
+- **Serialization Output**: `Serialize` returns a final frame `byte[]`.
 
-The repository includes a dedicated benchmark harness (`perf/PacketWire.Performance`). Measurements represent a local historical baseline on an AMD Ryzen-class workstation under BenchmarkDotNet (.NET 10.0 x64):
+### Local Baseline Measurements (Primitive Benchmark Packet)
 
-| Benchmark Operation | Median Latency | Allocated Memory | Allocation Pattern |
+The repository includes a lightweight local performance harness (`perf/PacketWire.Performance`) that measures elapsed time using `Stopwatch` timestamps and managed allocations using `GC.GetAllocatedBytesForCurrentThread()`.
+
+The historical baseline below was measured using a primitive-only benchmark packet (`PerformancePacket` containing `int`, `long`, and `bool` fields):
+
+| Benchmark Operation | Median Latency | Allocated Memory | Allocation Details |
 |---|---|---|---|
-| `plain.serialize` | 217.1748 ns/op | 48 B/op | Returns final frame `byte[]` |
-| `plain.deserialize` | 185.8864 ns/op | 32 B/op | Constructs restored DTO |
-| `protected.serialize.aesgcm` | 570.8500 ns/op | 72 B/op | Pooled temporary plaintext buffer + final protected frame `byte[]` |
-| `protected.deserialize.aesgcm` | 455.5690 ns/op | 32 B/op | Constructs restored DTO |
+| `plain.serialize` | 217.1748 ns/op | 48 B/op | Final frame `byte[]` |
+| `plain.deserialize` | 185.8864 ns/op | 32 B/op | Restored DTO instance |
+| `protected.serialize.aesgcm` | 570.8500 ns/op | 72 B/op | Pooled staging buffer + final protected frame `byte[]` |
+| `protected.deserialize.aesgcm` | 455.5690 ns/op | 32 B/op | Restored DTO instance |
+
+Measurement facts for the G6 primitive benchmark packet:
+- Plain serialization measured 48 B/op.
+- Plain deserialization measured 32 B/op.
+- AES-GCM protected serialization measured 72 B/op.
+- AES-GCM protected deserialization measured 32 B/op.
 
 > [!NOTE]
-> These measurements represent a local historical baseline and are **not an API SLA**. Actual throughput and latency vary based on payload size, processor architecture, runtime tiering, and OS cryptographic acceleration.
+> These figures represent a historical local baseline under warm-up and measurement iteration loops, **not an API SLA** and **not a universal throughput claim**. Timing and execution speed are environment-dependent (processor architecture, operating system, and runtime tiering). Furthermore, DTO shape can affect allocations, particularly when the decoded object graph contains strings, collections, nested reference types, or other allocation-producing values.
 
 ---
 
@@ -866,7 +878,7 @@ PacketWire maintains strict quality gates across all builds:
 
 1. **Authenticated Framing Binding**: Always use AES-GCM payload protection when communicating over untrusted networks. Tampering with unencrypted routing headers is caught by AES-GCM Associated Data (AAD) validation.
 2. **Buffer Erasure on Failure**: `AesGcmPayloadProtector` immediately zeroes decrypted memory buffers upon cryptographic authentication failure, preventing partial plaintext leakage.
-3. **Key Management**: Keys must be 16 bytes (AES-128), 24 bytes (AES-192), or 32 bytes (AES-256). Manage key lifecycles, rotation policies, and nonce uniqueness in accordance with organizational security policies and NIST recommendations for AEAD operation.
+3. **Key Management**: Keys must be 16 bytes (AES-128), 24 bytes (AES-192), or 32 bytes (AES-256). Manage key generation, storage, access, rotation, and retirement according to the application's security policy and threat model.
 4. **Collection Limits**: Always specify `[MaxCount(limit)]` on untrusted collections to safeguard against memory exhaustion attacks.
 
 ---
