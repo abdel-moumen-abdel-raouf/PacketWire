@@ -1,0 +1,386 @@
+name: Publish to NuGet.org
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  publish:
+    name: Validate, Pack, and Publish to NuGet.org
+    runs-on: ubuntu-latest
+    environment: release
+
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup .NET SDK 10.0.401
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.401'
+
+      - name: Verify release ref and metadata
+        shell: pwsh
+        run: |
+          $expectedVersion = "0.1.0"
+          $xml = [xml](Get-Content Directory.Build.props)
+          $versionPrefix = $xml.Project.PropertyGroup.VersionPrefix
+          Write-Output "Triggered ref: $env:GITHUB_REF"
+          Write-Output "Directory.Build.props VersionPrefix: $versionPrefix"
+          if ($versionPrefix -ne $expectedVersion) {
+            Write-Error "VersionPrefix '$versionPrefix' does not match expected version '$expectedVersion'!"
+            exit 1
+          }
+          if ($env:GITHUB_REF -ne "refs/tags/v$expectedVersion" -and $env:GITHUB_REF -ne "refs/heads/main") {
+            Write-Error "Unauthorized release ref: $env:GITHUB_REF. Must be refs/tags/v$expectedVersion or refs/heads/main."
+            exit 1
+          }
+
+      - name: Clean and Build (Debug)
+        shell: pwsh
+        run: |
+          dotnet clean PacketWire.slnx -c Debug
+          dotnet build PacketWire.slnx -c Debug
+
+      - name: Run Test Suites (Debug)
+        shell: pwsh
+        run: |
+          $suites = @(
+            @{ Path = "tests/PacketWire.Abstractions.Tests"; Expected = 32 },
+            @{ Path = "tests/PacketWire.Runtime.Tests"; Expected = 101 },
+            @{ Path = "tests/PacketWire.Generator.Tests"; Expected = 87 },
+            @{ Path = "tests/PacketWire.Security.AesGcm.Tests"; Expected = 7 },
+            @{ Path = "integration/PacketWire.Consumer.Tests"; Expected = 13 }
+          )
+          foreach ($suite in $suites) {
+            Write-Output "=== Testing (Debug): $($suite.Path) (Expected: $($suite.Expected)) ==="
+            dotnet test $suite.Path -c Debug --no-build
+            if ($LASTEXITCODE -ne 0) {
+              Write-Error "Debug test suite failed: $($suite.Path)"
+              exit $LASTEXITCODE
+            }
+          }
+
+      - name: Clean and Build (Release)
+        shell: pwsh
+        run: |
+          dotnet clean PacketWire.slnx -c Release
+          dotnet build PacketWire.slnx -c Release
+
+      - name: Run Test Suites (Release)
+        shell: pwsh
+        run: |
+          $suites = @(
+            @{ Path = "tests/PacketWire.Abstractions.Tests"; Expected = 32 },
+            @{ Path = "tests/PacketWire.Runtime.Tests"; Expected = 101 },
+            @{ Path = "tests/PacketWire.Generator.Tests"; Expected = 87 },
+            @{ Path = "tests/PacketWire.Security.AesGcm.Tests"; Expected = 7 },
+            @{ Path = "integration/PacketWire.Consumer.Tests"; Expected = 13 }
+          )
+          foreach ($suite in $suites) {
+            Write-Output "=== Testing (Release): $($suite.Path) (Expected: $($suite.Expected)) ==="
+            dotnet test $suite.Path -c Release --no-build
+            if ($LASTEXITCODE -ne 0) {
+              Write-Error "Release test suite failed: $($suite.Path)"
+              exit $LASTEXITCODE
+            }
+          }
+
+      - name: Pack Production Projects
+        shell: pwsh
+        run: |
+          $releaseDir = "artifacts/release/0.1.0"
+          if (Test-Path $releaseDir) { Remove-Item -Recurse -Force $releaseDir }
+          New-Item -ItemType Directory -Path $releaseDir -Force | Out-Null
+
+          $projects = @(
+            "src/PacketWire.Abstractions/PacketWire.Abstractions.csproj",
+            "src/PacketWire.Runtime/PacketWire.Runtime.csproj",
+            "src/PacketWire.Generator/PacketWire.Generator.csproj",
+            "src/PacketWire.Security.Abstractions/PacketWire.Security.Abstractions.csproj",
+            "src/PacketWire.Security.AesGcm/PacketWire.Security.AesGcm.csproj"
+          )
+
+          foreach ($proj in $projects) {
+            Write-Output "Packing $proj in Release..."
+            dotnet pack $proj -c Release --no-build -o $releaseDir
+            if ($LASTEXITCODE -ne 0) {
+              Write-Error "Failed to pack $proj"
+              exit $LASTEXITCODE
+            }
+          }
+
+          $packages = Get-ChildItem $releaseDir -Filter "*.nupkg"
+          if ($packages.Count -ne 5) {
+            Write-Error "Expected exactly 5 packages, found $($packages.Count)!"
+            exit 1
+          }
+
+          $expectedNames = @(
+            "PacketWire.Abstractions.0.1.0.nupkg",
+            "PacketWire.Generator.0.1.0.nupkg",
+            "PacketWire.Runtime.0.1.0.nupkg",
+            "PacketWire.Security.Abstractions.0.1.0.nupkg",
+            "PacketWire.Security.AesGcm.0.1.0.nupkg"
+          )
+          foreach ($name in $expectedNames) {
+            if (-not (Test-Path (Join-Path $releaseDir $name))) {
+              Write-Error "Missing expected package: $name"
+              exit 1
+            }
+          }
+          Write-Output "Pack verified: exactly 5 production packages produced."
+
+      - name: Audit Package Contents
+        shell: pwsh
+        run: |
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          $releaseDir = "artifacts/release/0.1.0"
+          $packages = Get-ChildItem $releaseDir -Filter "*.nupkg"
+
+          foreach ($pkg in $packages) {
+            Write-Output "--- Auditing $($pkg.Name) ---"
+            $zip = [System.IO.Compression.ZipFile]::OpenRead($pkg.FullName)
+
+            $license = $zip.Entries | Where-Object { $_.FullName -eq "LICENSE" }
+            if (-not $license) { Write-Error "LICENSE missing in $($pkg.Name)"; exit 1 }
+
+            $readme = $zip.Entries | Where-Object { $_.FullName -eq "README.md" }
+            if (-not $readme) { Write-Error "README.md missing in $($pkg.Name)"; exit 1 }
+
+            $nuspecEntry = $zip.Entries | Where-Object { $_.FullName.EndsWith(".nuspec") }
+            if (-not $nuspecEntry) { Write-Error "Nuspec missing in $($pkg.Name)"; exit 1 }
+            $stream = $nuspecEntry.Open()
+            $reader = New-Object System.IO.StreamReader($stream)
+            $xml = [xml]$reader.ReadToEnd()
+            $reader.Close()
+            $stream.Close()
+            $meta = $xml.package.metadata
+
+            if ($meta.id -ne $pkg.Name.Substring(0, $pkg.Name.IndexOf(".0.1.0.nupkg"))) {
+              Write-Error "Package ID mismatch in $($pkg.Name)"
+              exit 1
+            }
+            if ($meta.version -ne "0.1.0") { Write-Error "Invalid version in $($pkg.Name)"; exit 1 }
+            if ($meta.authors -ne "Abdel Moumen Abdel Raouf") { Write-Error "Invalid author in $($pkg.Name)"; exit 1 }
+            if ($meta.license.'#text' -ne "Apache-2.0") { Write-Error "Invalid license expression in $($pkg.Name)"; exit 1 }
+            if ($meta.repository.url -ne "https://github.com/abdel-moumen-abdel-raouf/PacketWire") { Write-Error "Invalid repository URL in $($pkg.Name)"; exit 1 }
+
+            if ($pkg.Name -like "PacketWire.Generator.*") {
+              $hasLib = $zip.Entries | Where-Object { $_.FullName.StartsWith("lib/") }
+              $hasRef = $zip.Entries | Where-Object { $_.FullName.StartsWith("ref/") }
+              $hasRoslynBin = $zip.Entries | Where-Object { $_.FullName -like "*Microsoft.CodeAnalysis*" }
+              $generatorDll = $zip.Entries | Where-Object { $_.FullName -eq "analyzers/dotnet/cs/PacketWire.Generator.dll" }
+
+              if ($hasLib) { Write-Error "Generator must not contain lib/"; exit 1 }
+              if ($hasRef) { Write-Error "Generator must not contain ref/"; exit 1 }
+              if ($hasRoslynBin) { Write-Error "Generator must not package Roslyn binaries"; exit 1 }
+              if (-not $generatorDll) { Write-Error "Generator DLL missing from analyzers/dotnet/cs/"; exit 1 }
+              if ($meta.dependencies) { Write-Error "Generator must have zero dependencies"; exit 1 }
+            } else {
+              $xmlDoc = $zip.Entries | Where-Object { $_.FullName.EndsWith(".xml") -and -not $_.FullName.EndsWith(".nuspec") -and -not $_.FullName.Contains("[Content_Types]") }
+              if (-not $xmlDoc -or $xmlDoc.Length -eq 0) {
+                Write-Error "XML documentation missing or empty in $($pkg.Name)"
+                exit 1
+              }
+            }
+
+            $zip.Dispose()
+          }
+          Write-Output "All package content audits PASSED."
+
+      - name: Package-Only Consumer Validation
+        shell: pwsh
+        run: |
+          $testDir = "artifacts/workflow-consumer-validation"
+          if (Test-Path $testDir) { Remove-Item -Recurse -Force $testDir }
+          New-Item -ItemType Directory -Path $testDir -Force | Out-Null
+
+          Set-Content -Path (Join-Path $testDir "Directory.Build.props") -Value "<Project />"
+
+          $nugetXml = @"
+          <?xml version="1.0" encoding="utf-8"?>
+          <configuration>
+            <config>
+              <add key="globalPackagesFolder" value="./packages_cache" />
+            </config>
+            <packageSources>
+              <clear />
+              <add key="LocalRelease" value="../release/0.1.0" />
+            </packageSources>
+          </configuration>
+          "@
+          Set-Content -Path (Join-Path $testDir "nuget.config") -Value $nugetXml
+
+          $projXml = @"
+          <Project Sdk="Microsoft.NET.Sdk">
+            <PropertyGroup>
+              <OutputType>Exe</OutputType>
+              <TargetFramework>net10.0</TargetFramework>
+              <ImplicitUsings>enable</ImplicitUsings>
+              <Nullable>enable</Nullable>
+              <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+              <EmitCompilerGeneratedFiles>true</EmitCompilerGeneratedFiles>
+            </PropertyGroup>
+            <ItemGroup>
+              <PackageReference Include="PacketWire.Runtime" Version="0.1.0" />
+              <PackageReference Include="PacketWire.Generator" Version="0.1.0" PrivateAssets="all" />
+              <PackageReference Include="PacketWire.Security.AesGcm" Version="0.1.0" />
+            </ItemGroup>
+          </Project>
+          "@
+          Set-Content -Path (Join-Path $testDir "Consumer.csproj") -Value $projXml
+
+          $programCs = @'
+          using System;
+          using System.Security.Cryptography;
+          using PacketWire;
+          using PacketWire.Security;
+
+          namespace WorkflowConsumer;
+
+          public enum Status : byte { Inactive = 0, Active = 1 }
+
+          [PacketProtocol(
+              PacketIntegerSize.TwoBytes,
+              PacketIntegerSize.TwoBytes,
+              PacketIntegerSize.TwoBytes,
+              PacketByteOrder.LittleEndian)]
+          public sealed partial class TestProtocol { }
+
+          [Packet(typeof(TestProtocol), 101, 1)]
+          public sealed class TestPacket
+          {
+              [PacketField(0)]
+              public int Id { get; init; }
+
+              [PacketField(1)]
+              [FixedString(32)]
+              public string Name { get; init; } = string.Empty;
+
+              [PacketField(2)]
+              [Optional]
+              public int? OptionalNumber { get; init; }
+
+              [PacketField(3)]
+              [Optional]
+              public Status? OptionalState { get; init; }
+          }
+
+          public static class Program
+          {
+              public static int Main()
+              {
+                  var p1 = new TestPacket { Id = 42, Name = "Alice", OptionalNumber = 12345, OptionalState = Status.Active };
+                  byte[] frame1 = TestProtocol.Serialize(p1);
+                  TestPacket r1 = TestProtocol.Deserialize<TestPacket>(frame1);
+                  if (r1.Id != 42 || r1.Name != "Alice" || r1.OptionalNumber != 12345 || r1.OptionalState != Status.Active) return 1;
+
+                  object untyped = TestProtocol.Deserialize(frame1);
+                  if (untyped is not TestPacket rUntyped || rUntyped.Id != 42) return 2;
+
+                  PacketIdentity id = TestProtocol.GetIdentity<TestPacket>();
+                  if (id.Category != 1 || id.Id != 101) return 3;
+
+                  byte[] key = new byte[32];
+                  RandomNumberGenerator.Fill(key);
+                  using var protector = new AesGcmPayloadProtector(key);
+                  byte[] protFrame = TestProtocol.Serialize(p1, protector);
+                  TestPacket rProt = TestProtocol.Deserialize<TestPacket>(protFrame, protector);
+                  if (rProt.Id != 42 || rProt.OptionalNumber != 12345) return 4;
+
+                  byte[] badKey = new byte[32];
+                  RandomNumberGenerator.Fill(badKey);
+                  using var badProtector = new AesGcmPayloadProtector(badKey);
+                  bool caught = false;
+                  try { TestProtocol.Deserialize<TestPacket>(protFrame, badProtector); } catch (PayloadProtectionException) { caught = true; }
+                  if (!caught) return 5;
+
+                  var pNull = new TestPacket { Id = 99, Name = "Bob", OptionalNumber = null, OptionalState = null };
+                  byte[] frameNull = TestProtocol.Serialize(pNull);
+                  TestPacket rNull = TestProtocol.Deserialize<TestPacket>(frameNull);
+                  if (rNull.OptionalNumber != null || rNull.OptionalState != null) return 6;
+
+                  return 0;
+              }
+          }
+          '@
+          Set-Content -Path (Join-Path $testDir "Program.cs") -Value $programCs
+
+          dotnet restore (Join-Path $testDir "Consumer.csproj")
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+          dotnet build (Join-Path $testDir "Consumer.csproj") --no-restore
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+          dotnet run --project (Join-Path $testDir "Consumer.csproj") --no-build
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+          $genFile = Get-ChildItem -Path (Join-Path $testDir "obj") -Recurse -Filter "PacketWire.TestPacket*.cs" | Select-Object -First 1
+          if (-not $genFile) { Write-Error "Generated codec file not found!"; exit 1 }
+          $genText = Get-Content $genFile.FullName -Raw
+          if (-not $genText.Contains("__optional_2 = value.@OptionalNumber;") -or -not $genText.Contains("__present_2 = __optional_2.HasValue;")) {
+            Write-Error "Nullable snapshot pattern not found in generated codec!"; exit 1
+          }
+
+          $binFiles = Get-ChildItem (Join-Path $testDir "bin/Debug/net10.0") -Filter "*.dll" | ForEach-Object { $_.Name }
+          if ($binFiles -contains "PacketWire.Generator.dll") { Write-Error "PacketWire.Generator.dll leaked to output!"; exit 1 }
+          if ($binFiles | Where-Object { $_ -like "*CodeAnalysis*" }) { Write-Error "Roslyn DLL leaked to output!"; exit 1 }
+
+          Write-Output "Package-only consumer validation PASSED."
+
+      - name: Generate and Verify SHA256SUMS.txt
+        shell: pwsh
+        run: |
+          $releaseDir = "artifacts/release/0.1.0"
+          $packages = Get-ChildItem $releaseDir -Filter "*.nupkg" | Sort-Object Name
+          $lines = @()
+          foreach ($pkg in $packages) {
+            $sha256 = (Get-FileHash -Path $pkg.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+            $line = "$sha256  $($pkg.Name)"
+            $lines += $line
+          }
+          $manifestPath = Join-Path $releaseDir "SHA256SUMS.txt"
+          [System.IO.File]::WriteAllLines($manifestPath, $lines)
+
+          Write-Output "=== SHA256SUMS.txt ==="
+          Get-Content $manifestPath
+
+      - name: NuGet Trusted Publishing Login
+        id: nuget-login
+        uses: NuGet/login@v1
+        with:
+          user: AliAlMasry
+
+      - name: Publish Packages to NuGet.org
+        shell: pwsh
+        env:
+          NUGET_API_KEY: ${{ steps.nuget-login.outputs.NUGET_API_KEY }}
+        run: |
+          $releaseDir = "artifacts/release/0.1.0"
+          $publishOrder = @(
+            "PacketWire.Abstractions.0.1.0.nupkg",
+            "PacketWire.Security.Abstractions.0.1.0.nupkg",
+            "PacketWire.Runtime.0.1.0.nupkg",
+            "PacketWire.Security.AesGcm.0.1.0.nupkg",
+            "PacketWire.Generator.0.1.0.nupkg"
+          )
+
+          foreach ($pkgName in $publishOrder) {
+            $pkgPath = Join-Path $releaseDir $pkgName
+            Write-Output "Pushing $pkgName to NuGet.org..."
+            dotnet nuget push $pkgPath --source https://api.nuget.org/v3/index.json
+            if ($LASTEXITCODE -ne 0) {
+              Write-Error "Failed to push $pkgName! Stopping publication immediately."
+              exit $LASTEXITCODE
+            }
+            Write-Output "Successfully pushed $pkgName."
+          }
+          Write-Output "All 5 PacketWire packages successfully published to NuGet.org."
